@@ -82,7 +82,7 @@ def create_prompt():
 def extract_data_from_page(page, pdf_path, prompt_text):
     print(f"[{os.path.basename(pdf_path)}] Navigating to Gemini...")
     page.goto(GEMINI_URL)
-    time.sleep(5)
+    time.sleep(10) # Increased for stability
     
     # Upload Logic
     print(f"[{os.path.basename(pdf_path)}] Attempting upload...")
@@ -308,8 +308,8 @@ def main(limit=None, browser_channel="chrome", template_path=None):
             logger.info("Login confirmed (Prompt area found). Proceeding immediately.")
         except:
              logger.warning("Login verification failed (Prompt area not found). Assuming need to log in.")
-             logger.info(f"Please log in to Gemini in the opened {browser_channel} window. Waiting 10 seconds...")
-             time.sleep(10)
+             logger.info(f"Please log in to Gemini in the opened {browser_channel} window. Waiting 30 seconds...")
+             time.sleep(30)
 
         # Process Files
         for pdf_path in pdf_files:
