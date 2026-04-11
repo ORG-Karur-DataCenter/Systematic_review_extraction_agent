@@ -1,30 +1,33 @@
-# Systematic Review Extraction Agent
+<p align="center">
+  <h1 align="center">Systematic Review Extraction Agent</h1>
+  <p align="center">
+    AI-powered structured data extraction from scientific PDFs.<br>
+    Upload your template, point to your articles, get a complete dataset.
+  </p>
+</p>
 
-An AI-powered data extraction tool that reads scientific PDF articles and extracts structured research data using Google Gemini. Designed for systematic reviews and meta-analyses — runs free via browser automation or fast via API.
-
-Part of the **Agentic AI-Powered Systematic Review Pipeline** described in:
-> *"Agentic AI for Systematic Reviews: A Four-Agent Pipeline for Deduplication, Screening, Extraction, and Validation"*
-
-**Related Repositories:**
-- [Deduplication Agent](https://github.com/ORG-Karur-DataCenter/Systematic_review_DeDuplication_agent)
-- [Screening Agent](https://github.com/ORG-Karur-DataCenter/Systematic_review_screening_agent)
-- [Validation & Healing Agent](https://github.com/ORG-Karur-DataCenter/Sys_review_extraction_validation_agent)
-
----
-
-## Features
-
-- **Automated PDF extraction** — uploads PDFs to Gemini and extracts 50+ structured data fields
-- **Comprehensive schema** — captures study design, sample size, demographics, interventions, outcomes, comorbidities
-- **Missing data justification** — for every null field, records an AI-generated reason why (`missing_data_justifications.json`)
-- **Deterministic percentage conversion** — converts outcome percentages to exact counts using `round(pct × n / 100)`
-- **Cross-validation support** — extract with two LLM calls and compare for consensus
-- **Free by default** — Playwright browser automation; no API costs
-- **API mode** — add `--api-key` for speed; supports API key rotation for rate-limit bypass
+<p align="center">
+  <a href="#quickstart">Quickstart</a> •
+  <a href="#how-it-works">How It Works</a> •
+  <a href="#output">Output</a> •
+  <a href="#advanced">Advanced</a> •
+  <a href="#contributing">Contributing</a>
+</p>
 
 ---
 
-## Installation
+> Part of the **Agentic AI-Powered Systematic Review Pipeline**
+>
+> [Deduplication Agent](https://github.com/ORG-Karur-DataCenter/Systematic_review_DeDuplication_agent) →
+> [Screening Agent](https://github.com/ORG-Karur-DataCenter/Systematic_review_screening_agent) →
+> **Extraction Agent** →
+> [Validation Agent](https://github.com/ORG-Karur-DataCenter/Sys_review_extraction_validation_agent)
+
+---
+
+## Quickstart
+
+### 1. Install
 
 ```bash
 git clone https://github.com/ORG-Karur-DataCenter/Systematic_review_extraction_agent.git
@@ -33,37 +36,149 @@ pip install -r requirements.txt
 playwright install chromium
 ```
 
----
+### 2. Prepare Your Inputs
 
-## Usage
+| Input | Description |
+|-------|-------------|
+| `Articles/` folder | Place all your included PDFs here |
+| Template file | `.xlsx` or `.docx` defining the fields to extract |
 
-### Free Mode (Browser Automation)
+### 3. Run
 
+**Browser mode (default — free, no API key):**
 ```bash
 python gemini_extractor.py --browser chrome
 ```
 
-- Browser opens to gemini.google.com
-- Log in with your Google account (one-time)
-- PDFs in `Articles/` are processed automatically
+A browser window opens, you log in to Gemini once, and PDFs are processed automatically.
 
-### API Mode (Faster)
-
+**API mode (faster):**
 ```bash
 python gemini_extractor.py --api-key YOUR_KEY
 ```
 
-### With Multiple Keys (Rate-Limit Rotation)
+No browser needed. Each PDF is uploaded via API and extracted in ~10 seconds.
 
-```bash
-python gemini_extractor.py --api-kit path/to/API_KIT.txt
+---
+
+## How It Works
+
+```
+                    ┌──────────────────────────┐
+                    │   gemini_extractor.py     │
+                    └────────┬─────────────────┘
+                             │
+              ┌──────────────┼──────────────┐
+              ▼              ▼              ▼
+        ┌──────────┐  ┌───────────┐  ┌──────────┐
+        │ Step 1   │  │  Step 2   │  │ Step 3   │
+        │ Parse    │  │ Upload    │  │ Post-    │
+        │ template │  │ PDF to    │  │ process  │
+        │ schema   │  │ Gemini    │  │ & save   │
+        │ (.xlsx)  │  │ + extract │  │ (.xlsx)  │
+        └──────────┘  └───────────┘  └──────────┘
 ```
 
-`API_KIT.txt` format — one key per line:
+### Step 1 — Parse Template
+Reads your `.xlsx` or `.docx` template and extracts all field names, sections, and descriptions. This defines the extraction schema.
+
+### Step 2 — AI Extraction
+For each PDF in `Articles/`:
+1. Uploads the PDF to Gemini (via browser or API)
+2. Sends the extraction prompt with all field definitions
+3. Receives structured JSON with extracted values
+4. Validates field completeness — logs any missing fields
+
+### Step 3 — Post-Processing
+Two automatic transformations:
+
+**Percentage-to-Count Conversion:**
+```
+"30%" + Sample Size 100 → "30/100 (30%)"
+```
+Uses deterministic formula: `count = round(pct × n / 100)`
+
+**Missing Data Justification:**
+```json
+{"Study_ID": {"BMI": "Not reported in study", "Follow-up": "Only in-hospital outcomes"}}
+```
+Every null field gets an AI-generated reason saved to `missing_data_justifications.json`.
+
+---
+
+## Extraction Schema
+
+The template covers 50+ fields across these categories:
+
+| Category | Example Fields |
+|----------|---------------|
+| **Study Characteristics** | Study ID, Journal, Country, Study Design, Database |
+| **Demographics** | Age (mean ± SD), Sex distribution, BMI |
+| **Intervention** | Drug/Procedure, Dose, Duration, Comparator |
+| **Outcomes** | Primary/Secondary Outcomes, Follow-up Duration |
+| **Comorbidities** | HTN, DM, CKD, CVD, Obesity |
+| **Quality** | Risk of Bias, Newcastle-Ottawa Scale, Jadad Score |
+
+You can use any template — the system adapts to whatever fields you define.
+
+---
+
+## Output
+
+| File | Description |
+|------|-------------|
+| `extracted_studies.xlsx` | Complete extraction dataset (one row per study) |
+| `missing_data_justifications.json` | Per-field null reasons for every study |
+| `extraction_summary.json` | Run summary (files processed, success/fail counts) |
+
+### Resume Support
+
+If the pipeline is interrupted, re-running it will **skip already-processed PDFs** and continue from where it left off. No duplicate work.
+
+---
+
+## Advanced
+
+### Command-Line Options
+
+```
+python gemini_extractor.py --help
+
+Options:
+  --browser CHANNEL   Browser for extraction (chrome, msedge)   [default]
+  --api-key KEY       Gemini API key (faster, no browser)
+  --template FILE     Path to template (.xlsx or .docx)
+  --limit N           Process only first N PDFs
+```
+
+### API Mode with Key Rotation
+
+For large datasets, provide multiple keys to avoid rate limits:
+
+```bash
+python gemini_extractor.py --api-kit API_KIT.txt
+```
+
+`API_KIT.txt` — one key per line:
 ```
 AIzaSyABC...
 AIzaSyDEF...
 AIzaSyGHI...
+```
+
+On rate limit (429), the pipeline automatically switches to the next key.
+
+### Verify API Connection
+
+```bash
+python test_connection.py
+python check_models.py
+```
+
+### Inspect Template Fields
+
+```bash
+python inspect_template.py
 ```
 
 ---
@@ -72,65 +187,56 @@ AIzaSyGHI...
 
 ```
 extraction_agent/
-├── gemini_extractor.py               # Main extractor (browser + API modes)
-├── gemini_api_extractor.py           # API-only extractor wrapper
-├── template_parser.py                # Reads extraction schema from Excel template
-├── inspect_template.py               # Debug/inspect extraction template fields
-├── check_models.py                   # List available Gemini models
-├── test_connection.py                # Verify API key and model access
-├── GLP1_Meta_Analysis_Data_Extraction_Template (1).xlsx  # Template schema
-├── requirements.txt                  # Python dependencies
-├── Articles/                         # Place your PDFs here (gitignored)
-└── README.md                         # This file
-```
-
----
-
-## Extraction Schema
-
-The extraction template covers:
-
-| Category | Fields |
-|---|---|
-| **Study Characteristics** | Study ID, Journal, Country, Study Design, Database, Sample Size |
-| **Demographics** | Age (mean ± SD), Sex (% male/female), BMI, Diabetes Status |
-| **Intervention** | Drug/Procedure, Dose, Duration, Comparator |
-| **Outcomes** | Primary Outcome, Secondary Outcomes, Follow-up Duration |
-| **Comorbidities** | HTN, DM, CKD, CVD, Obesity |
-| **Quality** | Risk of Bias, Newcastle-Ottawa Scale, Jadad Score |
-| **Null Reasons** | Per-field justification for every missing value |
-
----
-
-## Post-Processing
-
-After extraction, two automatic transformations are applied:
-
-**1. Null Reason Logging**
-```python
-# All null fields → structured reason saved to JSON
-{"Study_ID": {"BMI": "Not reported in study", "Follow-up": "Only in-hospital outcomes reported"}}
-```
-
-**2. Percentage-to-Count Conversion**
-```python
-# Converts "30%" to "30/100 (30%)" using sample size
-count = round(percentage * sample_size / 100)
-# → "30/100 (30%)"
+├── gemini_extractor.py            # Main extractor (browser + API modes)
+├── gemini_api_extractor.py        # API-only extractor wrapper
+├── template_parser.py             # Template schema reader (.xlsx/.docx)
+├── inspect_template.py            # Debug/inspect template fields
+├── check_models.py                # List available Gemini models
+├── test_connection.py             # Verify API key and model access
+├── requirements.txt               # Dependencies
+├── LICENSE                        # MIT License
+├── Articles/                      # Place PDFs here (gitignored)
+└── *.xlsx / *.docx                # Extraction templates
 ```
 
 ---
 
 ## API Configuration
 
-| Parameter | Value |
-|---|---|
-| `temperature` | `0.2` (deterministic, reproducible) |
-| `max_output_tokens` | `8192` (full schema) |
-| Model | `gemini-2.5-flash` (default) |
+| Parameter | Value | Purpose |
+|-----------|-------|---------|
+| `temperature` | `0.2` | Deterministic, reproducible extraction |
+| `max_output_tokens` | `8192` | Full schema JSON without truncation |
+| Model | `gemini-2.5-flash` | Fast, capable |
+
+---
+
+## Modes
+
+| Mode | Command | Speed | Cost |
+|------|---------|-------|------|
+| **Browser** (default) | `python gemini_extractor.py --browser chrome` | ~30s/PDF | Free |
+| **API** | `python gemini_extractor.py --api-key KEY` | ~10s/PDF | Free tier |
+| **API + rotation** | `python gemini_extractor.py --api-kit API_KIT.txt` | ~10s/PDF | Free tier × N keys |
+
+---
+
+## Contributing
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/my-feature`)
+3. Commit your changes (`git commit -m 'Add feature'`)
+4. Push to the branch (`git push origin feature/my-feature`)
+5. Open a Pull Request
 
 ---
 
 ## License
 
 MIT License — see [LICENSE](LICENSE) for details.
+
+---
+
+<p align="center">
+  <sub>Built for systematic reviewers. PDFs in, structured data out.</sub>
+</p>
