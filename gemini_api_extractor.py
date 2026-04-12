@@ -1,17 +1,37 @@
 import os
+import sys
 import time
 import json
 import glob
 import pandas as pd
 import argparse
+from datetime import datetime
 from google import genai
 from google.genai import types
 from template_parser import parse_template, get_field_names
 
+# Force UTF-8 on Windows
+if sys.platform == 'win32':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn
+from rich.text import Text
+from rich.live import Live
+from rich import box
+
+console = Console(force_terminal=True)
+
 # Configuration
 ARTICLES_DIR = 'Articles'
 OUTPUT_FILE = 'extracted_studies_api.xlsx'
-MODEL_NAME = "gemini-2.0-flash"
+MODEL_NAME = "gemini-2.5-flash"
 
 
 def auto_detect_template():
@@ -25,7 +45,6 @@ def auto_detect_template():
     if not candidates:
         return None
     
-    # Prefer .docx over .xlsx
     docx_files = [f for f in candidates if f.endswith('.docx')]
     if docx_files:
         return docx_files[0]
@@ -34,11 +53,9 @@ def auto_detect_template():
 
 DEFAULT_TEMPLATE = auto_detect_template()
 
-# Global variable to store template fields
+# Global variables
 TEMPLATE_FIELDS = None
 ALL_COLUMNS = None
-
-# API Key Pool for rotation
 API_KEYS = []
 CURRENT_KEY_INDEX = 0
 client = None
@@ -52,17 +69,16 @@ def rotate_key():
     
     CURRENT_KEY_INDEX = (CURRENT_KEY_INDEX + 1) % len(API_KEYS)
     client = genai.Client(api_key=API_KEYS[CURRENT_KEY_INDEX])
-    print(f"  Rotated to API key {CURRENT_KEY_INDEX + 1}/{len(API_KEYS)}")
+    console.print(f"    [dim]↻ Rotated to key {CURRENT_KEY_INDEX + 1}/{len(API_KEYS)}[/dim]")
     return True
 
 
 def load_template(template_path):
     """Load template and set global field variables."""
     global TEMPLATE_FIELDS, ALL_COLUMNS
-    print(f"Loading template: {template_path}")
     TEMPLATE_FIELDS = parse_template(template_path)
     ALL_COLUMNS = get_field_names(TEMPLATE_FIELDS)
-    print(f"Loaded {len(TEMPLATE_FIELDS)} fields from template")
+
 
 def create_prompt():
     """Create extraction prompt from loaded template fields."""
@@ -73,7 +89,6 @@ def create_prompt():
     prompt += "Return the result as a valid JSON object where keys are the 'Field Name' and values are the extracted text/numbers. If information is strictly missing, use null.\n"
     prompt += "Do not hallucinate data. If you are unsure, extraction is better left as null.\n\n"
     
-    # Group fields by section for better context
     sections = {}
     for field in TEMPLATE_FIELDS:
         section = field.section if field.section else "General"
@@ -90,6 +105,7 @@ def create_prompt():
     prompt += "\nReturn ONLY the JSON object. No markdown formatting (like ```json), no preamble."
     return prompt
 
+
 def clean_json_string(response_text):
     """Clean the response text to get valid JSON."""
     text = response_text.strip()
@@ -102,27 +118,22 @@ def clean_json_string(response_text):
     text = text.strip()
     return text
 
+
 def extract_study_with_api(pdf_path, prompt):
-    """Uploads file and extracts data using Gemini API (google.genai SDK)."""
+    """Uploads file and extracts data using Gemini API."""
     fname = os.path.basename(pdf_path)
-    print(f"[{fname}] Uploading to Gemini...")
     
     try:
-        # Upload the file
         uploaded_file = client.files.upload(file=pdf_path)
         
-        # Wait for processing
         wait_count = 0
         while uploaded_file.state == "PROCESSING":
             time.sleep(2)
             uploaded_file = client.files.get(name=uploaded_file.name)
             wait_count += 1
             if wait_count > 60:
-                print(f"[{fname}] Processing timed out. Skipping.")
-                return None
+                return None, "Processing timed out"
 
-        # Generate content
-        print(f"[{fname}] Generating extraction...")
         response = client.models.generate_content(
             model=MODEL_NAME,
             contents=[
@@ -134,80 +145,76 @@ def extract_study_with_api(pdf_path, prompt):
             )
         )
         
-        # Clean up uploaded file
         try:
             client.files.delete(name=uploaded_file.name)
         except:
             pass
 
-        # Parse Response
         try:
             text = clean_json_string(response.text)
             data = json.loads(text)
-            # Handle array response — model sometimes returns [{}] instead of {}
             if isinstance(data, list):
                 if len(data) > 0:
                     data = data[0]
                 else:
-                    print(f"[{fname}] Empty array returned.")
-                    return None
+                    return None, "Empty array"
             data['Source File'] = fname
-            return data
+            return data, None
         except json.JSONDecodeError:
-            print(f"[{fname}] Error: Invalid JSON returned.")
-            print(f"Debug Raw: {response.text[:200]}...")
-            return None
+            return None, f"Invalid JSON: {response.text[:100]}..."
             
     except Exception as e:
         error_msg = str(e)
         if '429' in error_msg or 'RESOURCE_EXHAUSTED' in error_msg:
-            print(f"[{fname}] Quota exceeded (429).")
             if rotate_key():
-                return "RETRY"
+                return "RETRY", "Quota exceeded → rotated key"
             else:
-                print(f"  All keys exhausted. Waiting 60 seconds...")
                 time.sleep(60)
-                return "RETRY"
+                return "RETRY", "All keys exhausted, waited 60s"
         elif any(kw in error_msg for kw in ['ConnectionError', 'TimeoutError', 'timed out', 'UNAVAILABLE']):
-            print(f"[{fname}] Network error: {e}. Waiting 10s...")
             time.sleep(10)
-            return "RETRY"
+            return "RETRY", f"Network error"
         else:
-            print(f"[{fname}] API Error: {e}")
-            return None
+            return None, str(e)
+
 
 def main(api_keys_input, limit=None, template_path=None):
     global API_KEYS, CURRENT_KEY_INDEX, client
     
-    # Parse API keys (comma-separated or single)
+    start_time = datetime.now()
+    
+    # Parse API keys
     API_KEYS = [k.strip() for k in api_keys_input.split(',') if k.strip()]
     CURRENT_KEY_INDEX = 0
-    
-    # Initialize client with first key
     client = genai.Client(api_key=API_KEYS[0])
-    print(f"Initialized with {len(API_KEYS)} API key(s)")
+    
+    # ── Banner ──
+    console.print()
+    console.print(Panel(
+        Text("STRUCTURED DATA EXTRACTION PIPELINE", style="bold white", justify="center"),
+        border_style="cyan", box=box.DOUBLE_EDGE, padding=(1, 4),
+        subtitle="Gemini API · google.genai SDK", subtitle_align="center"
+    ))
+    console.print()
     
     # Load Template
     if template_path is None:
         template_path = DEFAULT_TEMPLATE
     
     if template_path is None:
-        print("ERROR: No template file found.")
-        print("  Place a .docx file with 'template' in the name in the current directory,")
-        print("  or specify one with --template path/to/template.docx")
+        console.print("[bold red]✘[/bold red] No template file found.")
+        console.print("  Place a .docx file with 'template' in the name here, or use --template")
         return
-    
-    print(f"Auto-detected template: {template_path}")
     
     try:
         load_template(template_path)
     except Exception as e:
-        print(f"Error loading template: {e}")
+        console.print(f"[bold red]✘[/bold red] Error loading template: {e}")
         return
 
     # Get Files
     if not os.path.exists(ARTICLES_DIR):
-        print(f"Error: Directory {ARTICLES_DIR} does not exist.")
+        console.print(f"[bold red]✘[/bold red] Directory '{ARTICLES_DIR}' does not exist.")
         return
 
     pdf_files = sorted([os.path.join(ARTICLES_DIR, f) for f in os.listdir(ARTICLES_DIR) if f.lower().endswith('.pdf')])
@@ -227,44 +234,131 @@ def main(api_keys_input, limit=None, template_path=None):
     if limit:
         files_to_process = files_to_process[:int(limit)]
 
-    print(f"Found {len(pdf_files)} total. {len(files_to_process)} to process.")
-    
+    # ── Config Table ──
+    config_table = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
+    config_table.add_column(style="dim")
+    config_table.add_column(style="bold")
+    config_table.add_row("Template", str(template_path))
+    config_table.add_row("Model", MODEL_NAME)
+    config_table.add_row("API Keys", f"{len(API_KEYS)} key(s)")
+    config_table.add_row("PDFs", f"{len(files_to_process)} to process ({len(processed_files)} already done)")
+    config_table.add_row("Fields", f"{len(TEMPLATE_FIELDS)} fields per study")
+    console.print(Panel(config_table, title="[bold]Configuration", border_style="dim"))
+    console.print()
+
+    if not files_to_process:
+        console.print("[green]✔[/green] All studies already extracted. Nothing to do.")
+        return
+
     prompt = create_prompt()
     results = []
+    failures = []
 
-    for pdf_path in files_to_process:
-        max_retries = 5  # More retries since we have key rotation
-        for attempt in range(max_retries):
-            data = extract_study_with_api(pdf_path, prompt)
-            
-            if data == "RETRY":
-                continue
-            
-            if data:
-                results.append(data)
-                
-                # Save Incrementally
-                df = pd.DataFrame([data])
-                for c in ALL_COLUMNS:
-                    if c not in df.columns: df[c] = None
-                
-                cols = ['Source File'] + [c for c in ALL_COLUMNS if c in df.columns]
-                df = df[cols]
-                
-                if os.path.exists(OUTPUT_FILE):
-                    existing = pd.read_excel(OUTPUT_FILE)
-                    df = pd.concat([existing, df], ignore_index=True)
-                
-                df.to_excel(OUTPUT_FILE, index=False)
-                print(f"✔ Saved {os.path.basename(pdf_path)} [{len(results)}/{len(files_to_process)}]")
-                
-                time.sleep(4)
-                break
-            else:
-                print(f"Failed to extract {os.path.basename(pdf_path)} after attempt {attempt+1}")
-                time.sleep(2)
+    # ── Main Extraction Loop with Progress ──
+    with Progress(
+        SpinnerColumn("dots"),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(bar_width=35, style="cyan", complete_style="green"),
+        TaskProgressColumn(),
+        TextColumn("·"),
+        TimeElapsedColumn(),
+        TextColumn("·"),
+        TimeRemainingColumn(),
+        console=console,
+        expand=False,
+    ) as progress:
         
-    print(f"\nExtraction Complete. {len(results)}/{len(files_to_process)} studies extracted.")
+        task = progress.add_task("Extracting studies...", total=len(files_to_process))
+        
+        for i, pdf_path in enumerate(files_to_process):
+            fname = os.path.basename(pdf_path)
+            short_name = fname[:40] + "..." if len(fname) > 43 else fname
+            progress.update(task, description=f"[cyan]{short_name}")
+            
+            max_retries = 5
+            success = False
+            
+            for attempt in range(max_retries):
+                data, error = extract_study_with_api(pdf_path, prompt)
+                
+                if data == "RETRY":
+                    continue
+                
+                if data:
+                    results.append(data)
+                    
+                    # Save Incrementally
+                    df = pd.DataFrame([data])
+                    for c in ALL_COLUMNS:
+                        if c not in df.columns: df[c] = None
+                    
+                    cols = ['Source File'] + [c for c in ALL_COLUMNS if c in df.columns]
+                    df = df[cols]
+                    
+                    if os.path.exists(OUTPUT_FILE):
+                        existing = pd.read_excel(OUTPUT_FILE)
+                        existing = existing.loc[:, ~existing.columns.duplicated()]
+                        df = df.loc[:, ~df.columns.duplicated()]
+                        df = pd.concat([existing, df], ignore_index=True)
+                    
+                    df.to_excel(OUTPUT_FILE, index=False)
+                    success = True
+                    time.sleep(4)
+                    break
+                else:
+                    if attempt < max_retries - 1:
+                        time.sleep(2)
+            
+            if not success:
+                failures.append(fname)
+            
+            progress.update(task, advance=1)
+
+    # ── Summary ──
+    elapsed = (datetime.now() - start_time).total_seconds()
+    console.print()
+    
+    # Results table
+    stats = Table(box=box.ROUNDED, border_style="cyan", title="Extraction Results", title_style="bold cyan")
+    stats.add_column("Metric", style="white")
+    stats.add_column("Value", style="bold", justify="right")
+    stats.add_row("Total PDFs", str(len(files_to_process)))
+    stats.add_row("Extracted", f"[bold green]{len(results)}")
+    stats.add_row("Failed", f"[bold red]{len(failures)}" if failures else "[green]0")
+    stats.add_row("Previously Done", f"[dim]{len(processed_files)}")
+    stats.add_row("Time Elapsed", f"{elapsed:.0f}s ({elapsed/60:.1f} min)")
+    if results:
+        avg_time = elapsed / len(results)
+        stats.add_row("Avg per Study", f"{avg_time:.1f}s")
+    console.print(stats)
+    console.print()
+
+    # Output files
+    files_table = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
+    files_table.add_column(style="cyan")
+    files_table.add_column(style="dim")
+    files_table.add_row(OUTPUT_FILE, f"{len(results) + len(processed_files)} total rows")
+    console.print(Panel(files_table, title="[bold]Output Files", border_style="green"))
+
+    # Show failures if any
+    if failures:
+        console.print()
+        fail_table = Table(box=box.SIMPLE, border_style="red", title="Failed Extractions", title_style="bold red")
+        fail_table.add_column("#", style="dim", width=3)
+        fail_table.add_column("File", style="white")
+        for i, f in enumerate(failures, 1):
+            fail_table.add_row(str(i), f)
+        console.print(fail_table)
+
+    console.print()
+    console.print(Panel(
+        Text("Extraction Complete", style="bold green", justify="center"),
+        border_style="green", box=box.DOUBLE_EDGE,
+        subtitle=f"{len(results)} extracted · {len(failures)} failed · {elapsed:.0f}s",
+        subtitle_align="center"
+    ))
+    console.print()
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Extract data using Gemini API")
