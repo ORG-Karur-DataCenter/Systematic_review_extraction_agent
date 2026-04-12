@@ -162,6 +162,12 @@ def extract_study_with_api(pdf_path, prompt):
                     data = data[0]
                 else:
                     return None, "Empty array"
+            
+            # Validate: data must have actual extracted fields, not just empty
+            real_fields = {k: v for k, v in data.items() if v is not None and str(v).strip()}
+            if len(real_fields) < 3:
+                return None, f"Extraction returned only {len(real_fields)} non-null fields"
+            
             data['Source File'] = fname
             return data, None
         except json.JSONDecodeError:
