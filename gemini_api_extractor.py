@@ -38,8 +38,23 @@ DEFAULT_TEMPLATE = auto_detect_template()
 TEMPLATE_FIELDS = None
 ALL_COLUMNS = None
 
-# Global client
+# API Key Pool for rotation
+API_KEYS = []
+CURRENT_KEY_INDEX = 0
 client = None
+
+
+def rotate_key():
+    """Switch to the next API key in the pool."""
+    global CURRENT_KEY_INDEX, client
+    if len(API_KEYS) <= 1:
+        return False
+    
+    CURRENT_KEY_INDEX = (CURRENT_KEY_INDEX + 1) % len(API_KEYS)
+    client = genai.Client(api_key=API_KEYS[CURRENT_KEY_INDEX])
+    print(f"  Rotated to API key {CURRENT_KEY_INDEX + 1}/{len(API_KEYS)}")
+    return True
+
 
 def load_template(template_path):
     """Load template and set global field variables."""
@@ -78,14 +93,12 @@ def create_prompt():
 def clean_json_string(response_text):
     """Clean the response text to get valid JSON."""
     text = response_text.strip()
-    # Remove markdown code blocks if present
     if text.startswith("```"):
         first_newline = text.find("\n")
         if first_newline != -1:
             text = text[first_newline+1:]
         if text.endswith("```"):
             text = text[:-3]
-    
     text = text.strip()
     return text
 
@@ -148,22 +161,31 @@ def extract_study_with_api(pdf_path, prompt):
     except Exception as e:
         error_msg = str(e)
         if '429' in error_msg or 'RESOURCE_EXHAUSTED' in error_msg:
-            print(f"[{fname}] Quota exceeded (429). Waiting 30 seconds...")
-            time.sleep(30)
-            return "RETRY"
+            print(f"[{fname}] Quota exceeded (429).")
+            if rotate_key():
+                return "RETRY"
+            else:
+                print(f"  All keys exhausted. Waiting 60 seconds...")
+                time.sleep(60)
+                return "RETRY"
         elif any(kw in error_msg for kw in ['ConnectionError', 'TimeoutError', 'timed out', 'UNAVAILABLE']):
-            print(f"[{fname}] Network error: {e}. Waiting 10s and retrying...")
+            print(f"[{fname}] Network error: {e}. Waiting 10s...")
             time.sleep(10)
             return "RETRY"
         else:
             print(f"[{fname}] API Error: {e}")
             return None
 
-def main(api_key, limit=None, template_path=None):
-    global client
+def main(api_keys_input, limit=None, template_path=None):
+    global API_KEYS, CURRENT_KEY_INDEX, client
     
-    # Initialize client
-    client = genai.Client(api_key=api_key)
+    # Parse API keys (comma-separated or single)
+    API_KEYS = [k.strip() for k in api_keys_input.split(',') if k.strip()]
+    CURRENT_KEY_INDEX = 0
+    
+    # Initialize client with first key
+    client = genai.Client(api_key=API_KEYS[0])
+    print(f"Initialized with {len(API_KEYS)} API key(s)")
     
     # Load Template
     if template_path is None:
@@ -188,7 +210,7 @@ def main(api_key, limit=None, template_path=None):
         print(f"Error: Directory {ARTICLES_DIR} does not exist.")
         return
 
-    pdf_files = [os.path.join(ARTICLES_DIR, f) for f in os.listdir(ARTICLES_DIR) if f.lower().endswith('.pdf')]
+    pdf_files = sorted([os.path.join(ARTICLES_DIR, f) for f in os.listdir(ARTICLES_DIR) if f.lower().endswith('.pdf')])
     
     # Filter processed
     processed_files = set()
@@ -211,8 +233,7 @@ def main(api_key, limit=None, template_path=None):
     results = []
 
     for pdf_path in files_to_process:
-        # Retry loop
-        max_retries = 3
+        max_retries = 5  # More retries since we have key rotation
         for attempt in range(max_retries):
             data = extract_study_with_api(pdf_path, prompt)
             
@@ -235,7 +256,7 @@ def main(api_key, limit=None, template_path=None):
                     df = pd.concat([existing, df], ignore_index=True)
                 
                 df.to_excel(OUTPUT_FILE, index=False)
-                print(f"Saved {os.path.basename(pdf_path)}")
+                print(f"✔ Saved {os.path.basename(pdf_path)} [{len(results)}/{len(files_to_process)}]")
                 
                 time.sleep(4)
                 break
@@ -243,11 +264,11 @@ def main(api_key, limit=None, template_path=None):
                 print(f"Failed to extract {os.path.basename(pdf_path)} after attempt {attempt+1}")
                 time.sleep(2)
         
-    print("Extraction Complete.")
+    print(f"\nExtraction Complete. {len(results)}/{len(files_to_process)} studies extracted.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Extract data using Gemini API")
-    parser.add_argument("--key", help="Gemini API Key", required=True)
+    parser.add_argument("--key", help="Gemini API Key(s), comma-separated for rotation", required=True)
     parser.add_argument("--template", help="Path to template file", default=DEFAULT_TEMPLATE)
     parser.add_argument("--limit", help="Limit number of files", default=None)
     args = parser.parse_args()
