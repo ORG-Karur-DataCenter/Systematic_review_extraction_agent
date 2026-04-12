@@ -9,8 +9,30 @@ from template_parser import parse_template, get_field_names
 
 # Configuration
 ARTICLES_DIR = 'Articles'
-OUTPUT_FILE = 'extracted_studies_api.xlsx'  # New output file to avoid conflict
-DEFAULT_TEMPLATE = 'GLP1_Meta_Analysis_Data_Extraction_Template.docx'
+OUTPUT_FILE = 'extracted_studies_api.xlsx'
+
+
+def auto_detect_template():
+    """Auto-detect a template file (.docx) in the current directory."""
+    import glob
+    # Look for files with 'template' in the name (case-insensitive)
+    candidates = []
+    for ext in ['*.docx', '*.xlsx']:
+        for f in glob.glob(ext):
+            if 'template' in f.lower():
+                candidates.append(f)
+    
+    if not candidates:
+        return None
+    
+    # Prefer .docx over .xlsx
+    docx_files = [f for f in candidates if f.endswith('.docx')]
+    if docx_files:
+        return docx_files[0]
+    return candidates[0]
+
+
+DEFAULT_TEMPLATE = auto_detect_template()
 MODEL_NAME = "models/gemini-flash-latest"
 
 # Global variable to store template fields
@@ -131,6 +153,14 @@ def main(api_key, limit=None, template_path=None):
     # Load Template
     if template_path is None:
         template_path = DEFAULT_TEMPLATE
+    
+    if template_path is None:
+        print("ERROR: No template file found.")
+        print("  Place a .docx file with 'template' in the name in the current directory,")
+        print("  or specify one with --template path/to/template.docx")
+        return
+    
+    print(f"Auto-detected template: {template_path}")
     
     try:
         load_template(template_path)

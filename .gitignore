@@ -10,9 +10,16 @@ msedge_profile/
 chrome_profile/
 
 # Output files
-extracted_studies.xlsx
 *.xlsx
-!GLP1_Meta_Analysis_Data_Extraction_Template*.xlsx
+
+# Templates (user-specific, not tracked)
+*_Template*.docx
+*_Template*.xlsx
+*template*.docx
+reqd.*.docx
+
+# Study-specific files
+Articles/*.docx
 
 # Python
 __pycache__/
