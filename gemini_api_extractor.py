@@ -1,21 +1,21 @@
 import os
 import time
 import json
+import glob
 import pandas as pd
 import argparse
-import google.generativeai as genai
-from google.api_core import exceptions
+from google import genai
+from google.genai import types
 from template_parser import parse_template, get_field_names
 
 # Configuration
 ARTICLES_DIR = 'Articles'
 OUTPUT_FILE = 'extracted_studies_api.xlsx'
+MODEL_NAME = "gemini-2.0-flash"
 
 
 def auto_detect_template():
     """Auto-detect a template file (.docx) in the current directory."""
-    import glob
-    # Look for files with 'template' in the name (case-insensitive)
     candidates = []
     for ext in ['*.docx', '*.xlsx']:
         for f in glob.glob(ext):
@@ -33,11 +33,13 @@ def auto_detect_template():
 
 
 DEFAULT_TEMPLATE = auto_detect_template()
-MODEL_NAME = "models/gemini-2.0-flash"
 
 # Global variable to store template fields
 TEMPLATE_FIELDS = None
 ALL_COLUMNS = None
+
+# Global client
+client = None
 
 def load_template(template_path):
     """Load template and set global field variables."""
@@ -78,11 +80,9 @@ def clean_json_string(response_text):
     text = response_text.strip()
     # Remove markdown code blocks if present
     if text.startswith("```"):
-        # Find the first newline
         first_newline = text.find("\n")
         if first_newline != -1:
             text = text[first_newline+1:]
-        # Remove the closing ```
         if text.endswith("```"):
             text = text[:-3]
     
@@ -90,55 +90,40 @@ def clean_json_string(response_text):
     return text
 
 def extract_study_with_api(pdf_path, prompt):
-    """Uploads file and extracts data using Gemini API."""
+    """Uploads file and extracts data using Gemini API (google.genai SDK)."""
     fname = os.path.basename(pdf_path)
     print(f"[{fname}] Uploading to Gemini...")
     
     try:
-        # Upload the file with timeout protection
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future = executor.submit(
-                genai.upload_file, path=pdf_path, display_name=fname
-            )
-            try:
-                sample_file = future.result(timeout=120)  # 2 min timeout
-            except concurrent.futures.TimeoutError:
-                print(f"[{fname}] Upload timed out (>120s). Skipping.")
-                return None
+        # Upload the file
+        uploaded_file = client.files.upload(file=pdf_path)
         
-        # Verify state (with timeout)
+        # Wait for processing
         wait_count = 0
-        while sample_file.state.name == "PROCESSING":
+        while uploaded_file.state == "PROCESSING":
             time.sleep(2)
-            sample_file = genai.get_file(sample_file.name)
+            uploaded_file = client.files.get(name=uploaded_file.name)
             wait_count += 1
-            if wait_count > 60:  # 2 min max wait for processing
+            if wait_count > 60:
                 print(f"[{fname}] Processing timed out. Skipping.")
                 return None
-            
-        if sample_file.state.name == "FAILED":
-            print(f"[{fname}] File processing failed.")
-            return None
 
         # Generate content
         print(f"[{fname}] Generating extraction...")
-        model = genai.GenerativeModel(MODEL_NAME)
-        
-        # Configure Generation config for JSON output
-        generation_config = genai.GenerationConfig(
-            response_mime_type="application/json"
-        )
-
-        response = model.generate_content(
-            [sample_file, prompt],
-            generation_config=generation_config,
-            request_options={"timeout": 300}  # 5 min timeout for generation
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=[
+                types.Part.from_uri(file_uri=uploaded_file.uri, mime_type=uploaded_file.mime_type),
+                prompt
+            ],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+            )
         )
         
-        # Clean up the file from cloud storage
+        # Clean up uploaded file
         try:
-            genai.delete_file(sample_file.name)
+            client.files.delete(name=uploaded_file.name)
         except:
             pass
 
@@ -160,21 +145,25 @@ def extract_study_with_api(pdf_path, prompt):
             print(f"Debug Raw: {response.text[:200]}...")
             return None
             
-    except exceptions.ResourceExhausted:
-         print(f"[{fname}] Quota exceeded (429). Waiting 30 seconds...")
-         time.sleep(30)
-         return "RETRY"
-    except (ConnectionError, TimeoutError, OSError) as e:
-         print(f"[{fname}] Network error: {e}. Waiting 10s and retrying...")
-         time.sleep(10)
-         return "RETRY"
     except Exception as e:
-        print(f"[{fname}] API Error: {e}")
-        return None
+        error_msg = str(e)
+        if '429' in error_msg or 'RESOURCE_EXHAUSTED' in error_msg:
+            print(f"[{fname}] Quota exceeded (429). Waiting 30 seconds...")
+            time.sleep(30)
+            return "RETRY"
+        elif any(kw in error_msg for kw in ['ConnectionError', 'TimeoutError', 'timed out', 'UNAVAILABLE']):
+            print(f"[{fname}] Network error: {e}. Waiting 10s and retrying...")
+            time.sleep(10)
+            return "RETRY"
+        else:
+            print(f"[{fname}] API Error: {e}")
+            return None
 
 def main(api_key, limit=None, template_path=None):
-    # Configure API
-    genai.configure(api_key=api_key)
+    global client
+    
+    # Initialize client
+    client = genai.Client(api_key=api_key)
     
     # Load Template
     if template_path is None:
@@ -228,18 +217,16 @@ def main(api_key, limit=None, template_path=None):
             data = extract_study_with_api(pdf_path, prompt)
             
             if data == "RETRY":
-                continue # The function already waited
+                continue
             
             if data:
                 results.append(data)
                 
                 # Save Incrementally
                 df = pd.DataFrame([data])
-                # Ensure all columns
                 for c in ALL_COLUMNS:
                     if c not in df.columns: df[c] = None
                 
-                # Reorder
                 cols = ['Source File'] + [c for c in ALL_COLUMNS if c in df.columns]
                 df = df[cols]
                 
@@ -250,15 +237,13 @@ def main(api_key, limit=None, template_path=None):
                 df.to_excel(OUTPUT_FILE, index=False)
                 print(f"Saved {os.path.basename(pdf_path)}")
                 
-                # Rate Limit Safety: 15 RPM = ~4s per request. 
-                # To be super safe and avoid 429s, wait 4 seconds.
-                time.sleep(4) 
+                time.sleep(4)
                 break
             else:
                 print(f"Failed to extract {os.path.basename(pdf_path)} after attempt {attempt+1}")
                 time.sleep(2)
         
-    print("Optimization Complete.")
+    print("Extraction Complete.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Extract data using Gemini API")
