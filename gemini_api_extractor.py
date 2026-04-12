@@ -33,7 +33,7 @@ def auto_detect_template():
 
 
 DEFAULT_TEMPLATE = auto_detect_template()
-MODEL_NAME = "models/gemini-flash-latest"
+MODEL_NAME = "models/gemini-1.5-flash-latest"
 
 # Global variable to store template fields
 TEMPLATE_FIELDS = None
@@ -125,9 +125,8 @@ def extract_study_with_api(pdf_path, prompt):
         print(f"[{fname}] Generating extraction...")
         model = genai.GenerativeModel(MODEL_NAME)
         
-        # Configure Generation config
+        # Configure Generation config for JSON output
         generation_config = genai.GenerationConfig(
-            temperature=0.2,
             response_mime_type="application/json"
         )
 
@@ -147,6 +146,13 @@ def extract_study_with_api(pdf_path, prompt):
         try:
             text = clean_json_string(response.text)
             data = json.loads(text)
+            # Handle array response — model sometimes returns [{}] instead of {}
+            if isinstance(data, list):
+                if len(data) > 0:
+                    data = data[0]
+                else:
+                    print(f"[{fname}] Empty array returned.")
+                    return None
             data['Source File'] = fname
             return data
         except json.JSONDecodeError:
