@@ -91,23 +91,38 @@ def clean_json_string(response_text):
 
 def extract_study_with_api(pdf_path, prompt):
     """Uploads file and extracts data using Gemini API."""
-    print(f"[{os.path.basename(pdf_path)}] Uploading to Gemini...")
+    fname = os.path.basename(pdf_path)
+    print(f"[{fname}] Uploading to Gemini...")
     
     try:
-        # Upload the file
-        sample_file = genai.upload_file(path=pdf_path, display_name=os.path.basename(pdf_path))
+        # Upload the file with timeout protection
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future = executor.submit(
+                genai.upload_file, path=pdf_path, display_name=fname
+            )
+            try:
+                sample_file = future.result(timeout=120)  # 2 min timeout
+            except concurrent.futures.TimeoutError:
+                print(f"[{fname}] Upload timed out (>120s). Skipping.")
+                return None
         
-        # Verify state
+        # Verify state (with timeout)
+        wait_count = 0
         while sample_file.state.name == "PROCESSING":
-            time.sleep(1)
+            time.sleep(2)
             sample_file = genai.get_file(sample_file.name)
+            wait_count += 1
+            if wait_count > 60:  # 2 min max wait for processing
+                print(f"[{fname}] Processing timed out. Skipping.")
+                return None
             
         if sample_file.state.name == "FAILED":
-            print(f"[{os.path.basename(pdf_path)}] File processing failed.")
+            print(f"[{fname}] File processing failed.")
             return None
 
         # Generate content
-        print(f"[{os.path.basename(pdf_path)}] Generating extraction...")
+        print(f"[{fname}] Generating extraction...")
         model = genai.GenerativeModel(MODEL_NAME)
         
         # Configure Generation config
@@ -118,32 +133,37 @@ def extract_study_with_api(pdf_path, prompt):
 
         response = model.generate_content(
             [sample_file, prompt],
-            generation_config=generation_config
+            generation_config=generation_config,
+            request_options={"timeout": 300}  # 5 min timeout for generation
         )
         
-        # Clean up the file from cloud storage to be polite/clean
+        # Clean up the file from cloud storage
         try:
             genai.delete_file(sample_file.name)
         except:
-            pass # Not critical
+            pass
 
         # Parse Response
         try:
             text = clean_json_string(response.text)
             data = json.loads(text)
-            data['Source File'] = os.path.basename(pdf_path)
+            data['Source File'] = fname
             return data
         except json.JSONDecodeError:
-            print(f"[{os.path.basename(pdf_path)}] Error: Invalid JSON returned.")
-            print(f"Debug Raw: {response.text[:100]}...")
+            print(f"[{fname}] Error: Invalid JSON returned.")
+            print(f"Debug Raw: {response.text[:200]}...")
             return None
             
     except exceptions.ResourceExhausted:
-         print(f"[{os.path.basename(pdf_path)}] Quota exceeded (429). Waiting 30 seconds...")
+         print(f"[{fname}] Quota exceeded (429). Waiting 30 seconds...")
          time.sleep(30)
          return "RETRY"
+    except (ConnectionError, TimeoutError, OSError) as e:
+         print(f"[{fname}] Network error: {e}. Waiting 10s and retrying...")
+         time.sleep(10)
+         return "RETRY"
     except Exception as e:
-        print(f"[{os.path.basename(pdf_path)}] API Error: {e}")
+        print(f"[{fname}] API Error: {e}")
         return None
 
 def main(api_key, limit=None, template_path=None):
