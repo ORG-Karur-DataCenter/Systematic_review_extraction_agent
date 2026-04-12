@@ -33,7 +33,7 @@ def auto_detect_template():
 
 
 DEFAULT_TEMPLATE = auto_detect_template()
-MODEL_NAME = "models/gemini-1.5-flash-latest"
+MODEL_NAME = "models/gemini-2.0-flash"
 
 # Global variable to store template fields
 TEMPLATE_FIELDS = None
