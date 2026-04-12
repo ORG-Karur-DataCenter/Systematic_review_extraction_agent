@@ -3,8 +3,12 @@ import sys
 import time
 import json
 import glob
+import warnings
 import pandas as pd
 import argparse
+
+# Suppress pandas FutureWarning about empty/NA concat
+warnings.filterwarnings('ignore', category=FutureWarning, module='pandas')
 from datetime import datetime
 from google import genai
 from google.genai import types
@@ -268,12 +272,13 @@ def main(api_keys_input, limit=None, template_path=None):
         expand=False,
     ) as progress:
         
-        task = progress.add_task("Extracting studies...", total=len(files_to_process))
+        total = len(files_to_process)
+        task = progress.add_task("Extracting studies...", total=total)
         
         for i, pdf_path in enumerate(files_to_process):
             fname = os.path.basename(pdf_path)
-            short_name = fname[:40] + "..." if len(fname) > 43 else fname
-            progress.update(task, description=f"[cyan]{short_name}")
+            short_name = fname[:30] + "..." if len(fname) > 33 else fname
+            progress.update(task, description=f"[bold]Study {i+1}/{total}[/bold] [cyan]· {short_name}")
             
             max_retries = 5
             success = False
@@ -299,6 +304,8 @@ def main(api_keys_input, limit=None, template_path=None):
                         existing = pd.read_excel(OUTPUT_FILE)
                         existing = existing.loc[:, ~existing.columns.duplicated()]
                         df = df.loc[:, ~df.columns.duplicated()]
+                        # Drop all-NA columns before concat to avoid FutureWarning
+                        existing = existing.dropna(axis=1, how='all')
                         df = pd.concat([existing, df], ignore_index=True)
                     
                     df.to_excel(OUTPUT_FILE, index=False)
