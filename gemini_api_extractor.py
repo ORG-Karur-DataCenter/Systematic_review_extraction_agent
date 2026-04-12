@@ -88,10 +88,9 @@ def extract_study_with_api(pdf_path, prompt):
         print(f"[{os.path.basename(pdf_path)}] Generating extraction...")
         model = genai.GenerativeModel(MODEL_NAME)
         
-        # Configure Generation config — manuscript specifies temperature=0.2, max_tokens=2048
+        # Configure Generation config
         generation_config = genai.GenerationConfig(
             temperature=0.2,
-            max_output_tokens=2048,
             response_mime_type="application/json"
         )
 
