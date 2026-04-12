@@ -47,14 +47,14 @@ playwright install chromium
 
 **Browser mode (default — free, no API key):**
 ```bash
-python gemini_extractor.py --browser chrome
+python gemini_extractor.py --template your_template.docx --browser chrome
 ```
 
 A browser window opens, you log in to Gemini once, and PDFs are processed automatically.
 
 **API mode (faster):**
 ```bash
-python gemini_extractor.py --api-key YOUR_KEY
+python gemini_api_extractor.py --key YOUR_GEMINI_API_KEY --template your_template.docx
 ```
 
 No browser needed. Each PDF is uploaded via API and extracted in ~10 seconds.
@@ -141,32 +141,25 @@ If the pipeline is interrupted, re-running it will **skip already-processed PDFs
 
 ### Command-Line Options
 
+**Browser mode** (`gemini_extractor.py`):
 ```
 python gemini_extractor.py --help
 
 Options:
-  --browser CHANNEL   Browser for extraction (chrome, msedge)   [default]
-  --api-key KEY       Gemini API key (faster, no browser)
-  --template FILE     Path to template (.xlsx or .docx)
+  --template FILE     Path to template (.xlsx or .docx)  [default: GLP1_Meta_Analysis_Data_Extraction_Template.docx]
+  --browser CHANNEL   Browser channel (chrome, msedge)   [default: chrome]
   --limit N           Process only first N PDFs
 ```
 
-### API Mode with Key Rotation
-
-For large datasets, provide multiple keys to avoid rate limits:
-
-```bash
-python gemini_extractor.py --api-kit API_KIT.txt
+**API mode** (`gemini_api_extractor.py`):
 ```
+python gemini_api_extractor.py --help
 
-`API_KIT.txt` — one key per line:
+Options:
+  --key KEY           Gemini API key (required)
+  --template FILE     Path to template (.xlsx or .docx)  [default: GLP1_Meta_Analysis_Data_Extraction_Template.docx]
+  --limit N           Process only first N PDFs
 ```
-AIzaSyABC...
-AIzaSyDEF...
-AIzaSyGHI...
-```
-
-On rate limit (429), the pipeline automatically switches to the next key.
 
 ### Verify API Connection
 
@@ -187,10 +180,11 @@ python inspect_template.py
 
 ```
 extraction_agent/
-├── gemini_extractor.py            # Main extractor (browser + API modes)
-├── gemini_api_extractor.py        # API-only extractor wrapper
+├── gemini_extractor.py            # Browser-based extractor (Playwright, no API key needed)
+├── gemini_api_extractor.py        # API-based extractor (requires --key, faster)
 ├── template_parser.py             # Template schema reader (.xlsx/.docx)
 ├── inspect_template.py            # Debug/inspect template fields
+├── create_osa_template.py         # Generate OSA Spine Surgery extraction templates
 ├── check_models.py                # List available Gemini models
 ├── test_connection.py             # Verify API key and model access
 ├── requirements.txt               # Dependencies
@@ -213,11 +207,10 @@ extraction_agent/
 
 ## Modes
 
-| Mode | Command | Speed | Cost |
-|------|---------|-------|------|
-| **Browser** (default) | `python gemini_extractor.py --browser chrome` | ~30s/PDF | Free |
-| **API** | `python gemini_extractor.py --api-key KEY` | ~10s/PDF | Free tier |
-| **API + rotation** | `python gemini_extractor.py --api-kit API_KIT.txt` | ~10s/PDF | Free tier × N keys |
+| Mode | Script | Command | Speed | Cost |
+|------|--------|---------|-------|------|
+| **Browser** | `gemini_extractor.py` | `python gemini_extractor.py --template template.docx --browser chrome` | ~30s/PDF | Free |
+| **API** | `gemini_api_extractor.py` | `python gemini_api_extractor.py --key YOUR_KEY --template template.docx` | ~10s/PDF | Free tier |
 
 ---
 
