@@ -223,12 +223,23 @@ def main(api_keys_input, limit=None, template_path=None):
 
     pdf_files = sorted([os.path.join(ARTICLES_DIR, f) for f in os.listdir(ARTICLES_DIR) if f.lower().endswith('.pdf')])
     
-    # Filter processed
+    # Filter processed — only count rows that have actual data (not just Source File)
     processed_files = set()
     if os.path.exists(OUTPUT_FILE):
         try:
             df_existing = pd.read_excel(OUTPUT_FILE)
             if 'Source File' in df_existing.columns:
+                # A row counts as "processed" only if it has data beyond Source File
+                data_cols = [c for c in df_existing.columns if c != 'Source File']
+                has_data = df_existing[data_cols].notna().any(axis=1)
+                
+                # Remove empty rows from the file
+                empty_count = (~has_data).sum()
+                if empty_count > 0:
+                    df_existing = df_existing[has_data]
+                    df_existing.to_excel(OUTPUT_FILE, index=False)
+                    console.print(f"  [yellow]⚠[/yellow] Cleaned {empty_count} empty rows from {OUTPUT_FILE}")
+                
                 processed_files = set(df_existing['Source File'].astype(str).tolist())
         except:
             pass
