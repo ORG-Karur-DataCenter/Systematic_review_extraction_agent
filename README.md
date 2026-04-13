@@ -61,6 +61,16 @@ No browser needed. Each PDF is uploaded via API and extracted in ~10 seconds.
 
 ---
 
+## 🌐 Web Interface
+
+Prefer not to install anything? A browser-based version is also available:
+
+**[Launch Web Extraction App](https://org-karur-datacenter.github.io/sr-extract-app/)** · [Source code](https://github.com/ORG-Karur-DataCenter/sr-extract-app)
+
+Paste template fields from Excel, upload PDFs, and extract — all in your browser.
+
+---
+
 ## How It Works
 
 ```
